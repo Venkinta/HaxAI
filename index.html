@@ -94,6 +94,12 @@ const CFG = {
   MAX_STEPS: 1500, // match play.py MAX_STEPS
 };
 
+// ==================== HARD-CODED PLAYER NAMES ====================
+const PLAYER_NAMES = {
+  human: 'YOU',
+  ai:    'SP_V7',
+};
+
 // Render scale — increase for bigger canvas, decrease for smaller screens
 const SCALE = 1.6;
 
@@ -457,7 +463,7 @@ function drawHUD() {
   // YOU — AI labels
   ctx.font = `${Math.round(7.5*SCALE)}px Consolas`;
   ctx.fillStyle = '#aaa';
-  ctx.fillText('YOU  —  AI', W/2, 33 * SCALE);
+  ctx.fillText(`${PLAYER_NAMES.human}  —  ${PLAYER_NAMES.ai}`, W/2, 33 * SCALE);
 
   // Speed indicator (top right)
   ctx.font = `${Math.round(7*SCALE)}px Consolas`;
@@ -522,8 +528,8 @@ function gameLoop(ts) {
 
   // Render once per animation frame regardless of physics ticks
   drawField();
-  drawPlayer(p1, '#dc3c3c', 'YOU');
-  drawPlayer(p2, '#3c50dc', 'AI');
+  drawPlayer(p1, '#dc3c3c', PLAYER_NAMES.human);
+  drawPlayer(p2, '#3c50dc', PLAYER_NAMES.ai);
   drawBall();
   drawHUD();
 }
