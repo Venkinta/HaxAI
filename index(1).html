@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HaxAI</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: 'Consolas', monospace;
+    color: #eee;
+    user-select: none;
+  }
+  h1 {
+    font-size: 2rem;
+    letter-spacing: 4px;
+    margin-bottom: 8px;
+    color: #e94560;
+    text-shadow: 0 0 20px #e9456066;
+  }
+  #subtitle {
+    font-size: 0.8rem;
+    color: #888;
+    margin-bottom: 16px;
+    letter-spacing: 2px;
+  }
+  #canvas-wrap {
+    position: relative;
+    border: 2px solid #e94560;
+    box-shadow: 0 0 40px #e9456033;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  canvas { display: block; }
+  #overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: #000c;
+    font-size: 1.4rem;
+    text-align: center;
+    line-height: 2.2;
+  }
+  #overlay button {
+    margin-top: 16px;
+    padding: 10px 32px;
+    font-family: monospace;
+    font-size: 1rem;
+    background: #e94560;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    letter-spacing: 2px;
+  }
+  #overlay button:hover { background: #c73050; }
+  #controls {
+    margin-top: 10px;
+    font-size: 0.72rem;
+    color: #666;
+    letter-spacing: 1px;
+  }
+  #loading-bar-wrap {
+    width: 300px; height: 6px;
+    background: #333; border-radius: 3px;
+    margin-top: 12px; overflow: hidden;
+  }
+  #loading-bar {
+    height: 100%; width: 0%;
+    background: #e94560;
+    transition: width 0.3s;
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+
+<h1>HaxAI</h1>
+<div id="subtitle">YOU vs THE MACHINE</div>
+
+<div id="canvas-wrap">
+  <canvas id="c"></canvas>
+  <div id="overlay">
+    <div id="overlay-msg">Loading AI brain...</div>
+    <div id="loading-bar-wrap"><div id="loading-bar"></div></div>
+  </div>
+</div>
+
+<div id="controls">
+  ARROWS: move &nbsp;|&nbsp; SPACE: kick &nbsp;|&nbsp; R: reset
+</div>
+
+<script>
+// =============================================================================
+// CONFIG (must match Python config.py)
+// =============================================================================
+const CFG = {
+  FIELD_W:  368, FIELD_H:  171,
+  GOAL_H:    63,
+  MAP_W:    420, MAP_H:    200,
+  P_RADIUS:  15, P_INV_MASS: 0.5, P_DAMPING: 0.96, P_ACCEL: 0.11,
+  B_RADIUS: 5.5, B_INV_MASS: 0.7, B_DAMPING: 0.986, B_BOUNCE: 0.2,
+  KICK_STR: 6.5, KICK_OFFSET: 10,
+  MAX_VEL: 15.0,
+};
+const SCALE = 1.6;  // render scale — adjust if canvas is too big/small on your screen
+const W = CFG.MAP_W * 2 * SCALE;
+const H = CFG.MAP_H * 2 * SCALE;
+
+// =============================================================================
+// CANVAS SETUP
+// =============================================================================
+const canvas = document.getElementById('c');
+canvas.width  = W;
+canvas.height = H;
+const ctx = canvas.getContext('2d');
+
+function px(x, y) {
+  return [(x + CFG.MAP_W) * SCALE, (y + CFG.MAP_H) * SCALE];
+}
+
+// =============================================================================
+// PHYSICS — mirror of Python engine
+// =============================================================================
+class Entity {
+  constructor(x, y, radius, invMass, damping, bCoef) {
+    this.x = x; this.y = y;
+    this.vx = 0; this.vy = 0;
+    this.radius = radius;
+    this.invMass = invMass;
+    this.damping = damping;
+    this.bCoef = bCoef;
+  }
+  move() {
+    this.x += this.vx; this.y += this.vy;
+    this.vx *= this.damping; this.vy *= this.damping;
+  }
+}
+
+class Player extends Entity {
+  constructor(x, y) {
+    super(x, y, CFG.P_RADIUS, CFG.P_INV_MASS, CFG.P_DAMPING, 0.5);
+    this.canKick = false;
+    this.pressingKick = false;
+    this.hasKickedThisPress = false;
+  }
+  applyInput(up, down, left, right, kick) {
+    let ax = 0, ay = 0;
+    if (left)  ax -= CFG.P_ACCEL;
+    if (right) ax += CFG.P_ACCEL;
+    if (up)    ay -= CFG.P_ACCEL;
+    if (down)  ay += CFG.P_ACCEL;
+    const len = Math.sqrt(ax*ax + ay*ay);
+    if (len > CFG.P_ACCEL) { ax = ax/len*CFG.P_ACCEL; ay = ay/len*CFG.P_ACCEL; }
+    this.vx += ax; this.vy += ay;
+    if (kick && !this.pressingKick) this.hasKickedThisPress = false;
+    this.pressingKick = kick;
+    this.canKick = kick && !this.hasKickedThisPress;
+  }
+}
+
+class Ball extends Entity {
+  constructor() {
+    super(0, 0, CFG.B_RADIUS, CFG.B_INV_MASS, CFG.B_DAMPING, CFG.B_BOUNCE);
+  }
+}
+
+function resolveCollision(a, b) {
+  const dx = a.x - b.x, dy = a.y - b.y;
+  const dist = Math.sqrt(dx*dx + dy*dy);
+  const combined = a.radius + b.radius;
+  if (dist >= combined || dist < 0.0001) return;
+  const nx = dx/dist, ny = dy/dist;
+  const pen = combined - dist;
+  const tim = a.invMass + b.invMass;
+  a.x += nx * pen * a.invMass / tim; a.y += ny * pen * a.invMass / tim;
+  b.x -= nx * pen * b.invMass / tim; b.y -= ny * pen * b.invMass / tim;
+  const rvx = a.vx - b.vx, rvy = a.vy - b.vy;
+  const vn = rvx*nx + rvy*ny;
+  if (vn > 0) return;
+  const e = (a.bCoef + b.bCoef) / 2;
+  const j = -(1+e)*vn / tim;
+  a.vx += nx*j*a.invMass; a.vy += ny*j*a.invMass;
+  b.vx -= nx*j*b.invMass; b.vy -= ny*j*b.invMass;
+}
+
+function checkKick(player, ball) {
+  if (!player.canKick) return;
+  const dx = ball.x - player.x, dy = ball.y - player.y;
+  const dist = Math.sqrt(dx*dx + dy*dy);
+  const reach = player.radius + ball.radius + CFG.KICK_OFFSET;
+  if (dist < reach) {
+    const len = dist || 1;
+    ball.vx += (dx/len) * CFG.KICK_STR;
+    ball.vy += (dy/len) * CFG.KICK_STR;
+    player.hasKickedThisPress = true;
+  }
+}
+
+function applyBoundaries(e) {
+  // Players bounded by MAP size
+  if (e.x + e.radius > CFG.MAP_W)  { e.x = CFG.MAP_W  - e.radius; e.vx *= -0.5; }
+  if (e.x - e.radius < -CFG.MAP_W) { e.x = -CFG.MAP_W + e.radius; e.vx *= -0.5; }
+  if (e.y + e.radius > CFG.MAP_H)  { e.y = CFG.MAP_H  - e.radius; e.vy *= -0.5; }
+  if (e.y - e.radius < -CFG.MAP_H) { e.y = -CFG.MAP_H + e.radius; e.vy *= -0.5; }
+}
+
+function handleBallBounds(ball) {
+  // Top/bottom walls
+  if (ball.y + ball.radius > CFG.FIELD_H)  { ball.y = CFG.FIELD_H  - ball.radius; ball.vy *= -0.5; }
+  if (ball.y - ball.radius < -CFG.FIELD_H) { ball.y = -CFG.FIELD_H + ball.radius; ball.vy *= -0.5; }
+  // Side walls — only if not in goal mouth
+  if (Math.abs(ball.y) > CFG.GOAL_H) {
+    if (ball.x + ball.radius > CFG.FIELD_W)  { ball.x = CFG.FIELD_W  - ball.radius; ball.vx *= -0.5; }
+    if (ball.x - ball.radius < -CFG.FIELD_W) { ball.x = -CFG.FIELD_W + ball.radius; ball.vx *= -0.5; }
+  }
+}
+
+function checkGoal(ball) {
+  if (Math.abs(ball.y) < CFG.GOAL_H) {
+    if (ball.x >  CFG.FIELD_W) return  1; // right goal = AI's goal? No — right goal = p2's goal. p1 scores
+    if (ball.x < -CFG.FIELD_W) return -1; // left goal  = p1's goal.  p2 scores
+  }
+  return 0;
+}
+
+// =============================================================================
+// NEURAL NETWORK INFERENCE (PPO policy — numpy-style in JS)
+// =============================================================================
+// Weights loaded from weights.json
+let W0, B0, W1, B1, W2, B2;
+
+function matVec(W, v) {
+  // W: [rows][cols], v: [cols] → out: [rows]
+  return W.map(row => row.reduce((s, w, i) => s + w * v[i], 0));
+}
+function addBias(v, b) { return v.map((x, i) => x + b[i]); }
+function tanh(v) { return v.map(x => Math.tanh(x)); }
+
+function policyInfer(obs) {
+  // Forward pass: obs → tanh(W0·obs+B0) → tanh(W1·h0+B1) → W2·h1+B2
+  let h = tanh(addBias(matVec(W0, obs), B0));
+      h = tanh(addBias(matVec(W1, h),  B1));
+  const logits = addBias(matVec(W2, h), B2);
+  // MultiDiscrete([3,3,2]) — argmax within each segment
+  const act0 = argmax(logits.slice(0, 3)); // x movement
+  const act1 = argmax(logits.slice(3, 6)); // y movement
+  const act2 = argmax(logits.slice(6, 8)); // kick
+  return [act0, act1, act2];
+}
+
+function argmax(arr) {
+  return arr.reduce((bi, v, i, a) => v > a[bi] ? i : bi, 0);
+}
+
+// =============================================================================
+// OBSERVATION BUILDER (mirror of selfplay_env._get_obs, is_p1=False for AI=p2)
+// =============================================================================
+function getObs(p1, p2, ball, isP1) {
+  const p   = isP1 ? p1 : p2;
+  const opp = isP1 ? p2 : p1;
+  const dm  = isP1 ? 1 : -1;
+  const gx  = CFG.FIELD_W * dm;
+  const MV  = CFG.MAX_VEL;
+  const FW2 = CFG.FIELD_W * 2;
+  const FH2 = CFG.FIELD_H * 2;
+
+  function nc(v, maxv) { return Math.max(-1, Math.min(1, v / maxv)); }
+
+  return [
+    nc(p.vx * dm,                 MV),
+    nc(p.vy,                      MV),
+    nc((ball.x - p.x) * dm,      FW2),
+    nc((ball.y - p.y),            FH2),
+    nc(ball.vx * dm,              MV),
+    nc(ball.vy,                   MV),
+    nc((gx - p.x) * dm,          FW2),
+    nc((0  - p.y),                FH2),
+    p.canKick ? 1.0 : -1.0,
+    nc((opp.x - p.x) * dm,       FW2),
+    nc((opp.y - p.y),             FH2),
+    nc(opp.vx * dm,               MV),
+    nc(opp.vy,                    MV),
+  ];
+}
+
+// AI action → engine booleans (p2, so left/right flipped)
+function aiToActions(act) {
+  const [ax, ay, ak] = act;
+  return {
+    up:    ay === 0,
+    down:  ay === 2,
+    left:  ax === 2, // flipped for p2
+    right: ax === 0, // flipped for p2
+    kick:  ak === 1,
+  };
+}
+
+// =============================================================================
+// GAME STATE
+// =============================================================================
+let p1, p2, ball;
+let scoreHuman = 0, scoreAI = 0;
+let step = 0;
+const MAX_STEPS = 1500;
+let flashMsg = '', flashTimer = 0;
+
+function resetPositions() {
+  p1   = new Player(-180, 0);
+  p2   = new Player( 180, 0);
+  ball = new Ball();
+  step = 0;
+}
+
+function goalScored(side) {
+  // side: 'human' or 'ai'
+  if (side === 'human') { scoreHuman++; flashMsg = '⚽  YOUR GOAL!'; }
+  else                  { scoreAI++;    flashMsg = '💀  AI SCORED';  }
+  flashTimer = 100;
+  resetPositions();
+}
+
+// =============================================================================
+// INPUT
+// =============================================================================
+const keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'KeyR') resetPositions();
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) {
+    e.preventDefault();
+  }
+});
+document.addEventListener('keyup',   e => { keys[e.code] = false; });
+
+// =============================================================================
+// RENDERING
+// =============================================================================
+function drawField() {
+  // Background
+  ctx.fillStyle = '#226622';
+  ctx.fillRect(0, 0, W, H);
+
+  // Field outline
+  const [fx, fy] = px(-CFG.FIELD_W, -CFG.FIELD_H);
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(fx, fy, CFG.FIELD_W * 2 * SCALE, CFG.FIELD_H * 2 * SCALE);
+
+  // Centre line
+  const [cx0, cy0] = px(0, -CFG.FIELD_H);
+  const [cx1, cy1] = px(0,  CFG.FIELD_H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(cx0, cy0); ctx.lineTo(cx1, cy1); ctx.stroke();
+
+  // Centre circle
+  const [ccx, ccy] = px(0, 0);
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.beginPath(); ctx.arc(ccx, ccy, 50*SCALE, 0, Math.PI*2); ctx.stroke();
+
+  // Goals
+  drawGoal(-CFG.FIELD_W, '#aaa');   // left (human's goal)
+  drawGoal( CFG.FIELD_W, '#aaa');   // right (AI's goal)
+}
+
+function drawGoal(goalX, col) {
+  ctx.fillStyle = col;
+  const isLeft = goalX < 0;
+  const gw = 14 * SCALE;
+  const gh = CFG.GOAL_H * 2 * SCALE;
+  const [gx, gy] = isLeft
+    ? px(goalX - 14, -CFG.GOAL_H)
+    : px(goalX,      -CFG.GOAL_H);
+  ctx.fillRect(gx, gy, gw, gh);
+}
+
+function drawBall(b) {
+  const [bx, by] = px(b.x, b.y);
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(bx, by, b.radius * SCALE, 0, Math.PI*2);
+  ctx.fill();
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(bx, by + b.radius*SCALE*0.8, b.radius*SCALE*0.7, b.radius*SCALE*0.25, 0, 0, Math.PI*2);
+  ctx.fill();
+}
+
+function drawPlayer(p, col, label) {
+  const [px2, py2] = px(p.x, p.y);
+  const r = p.radius * SCALE;
+  // Kick flash
+  if (p.canKick) {
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(px2, py2, r+4, 0, Math.PI*2); ctx.stroke();
+  }
+  ctx.fillStyle = col;
+  ctx.beginPath(); ctx.arc(px2, py2, r, 0, Math.PI*2); ctx.fill();
+  // Label
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold ${Math.round(10*SCALE)}px Consolas`;
+  ctx.textAlign = 'center';
+  ctx.fillText(label, px2, py2 - r - 4);
+}
+
+function drawHUD() {
+  // Scoreboard
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(W/2 - 90*SCALE, 6, 180*SCALE, 36*SCALE);
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold ${Math.round(16*SCALE)}px Consolas`;
+  ctx.textAlign = 'center';
+  ctx.fillText(`${scoreHuman}  —  ${scoreAI}`, W/2, 22*SCALE);
+  ctx.font = `${Math.round(8*SCALE)}px Consolas`;
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('YOU  —  AI', W/2, 34*SCALE);
+
+  // Time bar
+  const barH = 4 * SCALE;
+  ctx.fillStyle = '#333';
+  ctx.fillRect(0, H - barH, W, barH);
+  ctx.fillStyle = '#4caf50';
+  ctx.fillRect(0, H - barH, W * (step / MAX_STEPS), barH);
+
+  // Flash message
+  if (flashTimer > 0) {
+    const alpha = Math.min(1, flashTimer / 30);
+    ctx.fillStyle = `rgba(0,0,0,${alpha * 0.7})`;
+    ctx.fillRect(W/2 - 140*SCALE, H/2 - 24*SCALE, 280*SCALE, 48*SCALE);
+    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+    ctx.font = `bold ${Math.round(18*SCALE)}px Consolas`;
+    ctx.textAlign = 'center';
+    ctx.fillText(flashMsg, W/2, H/2 + 6*SCALE);
+    flashTimer--;
+  }
+}
+
+// =============================================================================
+// GAME LOOP
+// =============================================================================
+let running = false;
+let lastTime = 0;
+const STEP_MS = 1000 / 60;
+
+function physicsStep(humanActions, aiActions) {
+  // Apply inputs
+  p1.applyInput(humanActions.up, humanActions.down, humanActions.left, humanActions.right, humanActions.kick);
+  p2.applyInput(aiActions.up,    aiActions.down,    aiActions.left,    aiActions.right,    aiActions.kick);
+
+  // Kick
+  checkKick(p1, ball);
+  checkKick(p2, ball);
+
+  // Move
+  p1.move(); p2.move(); ball.move();
+
+  // Collisions
+  resolveCollision(p1, ball);
+  resolveCollision(p2, ball);
+  resolveCollision(p1, p2);
+
+  // Boundaries
+  applyBoundaries(p1);
+  applyBoundaries(p2);
+  handleBallBounds(ball);
+
+  // Goal check
+  return checkGoal(ball);
+}
+
+function gameLoop(ts) {
+  if (!running) return;
+  requestAnimationFrame(gameLoop);
+
+  const dt = ts - lastTime;
+  if (dt < STEP_MS * 0.8) return;  // skip if too early (cap at 60fps)
+  lastTime = ts;
+
+  // Human input
+	const humanActions = {
+	  up:    !!keys['KeyW'],
+	  down:  !!keys['KeyS'],
+	  left:  !!keys['KeyA'],
+	  right: !!keys['KeyD'],
+	  kick:  !!keys['Space'],
+	};
+
+  // AI input — p2 is AI, attacking left goal (dir_mult = -1)
+  const obs    = getObs(p1, p2, ball, false);  // is_p1=false → AI is p2
+  const aiAct  = policyInfer(obs);
+  const aiActions = aiToActions(aiAct);
+
+  // 4 physics sub-steps (matches training)
+  let goal = 0;
+  for (let i = 0; i < 4; i++) {
+    goal = physicsStep(humanActions, aiActions);
+    if (goal !== 0) break;
+  }
+  step++;
+
+  // Goal handling
+  if (goal === 1) {
+    // Left goal = human's goal = AI scored. Wait — let's verify:
+    // checkGoal: ball.x < -FIELD_W → return -1 (p2 scores)
+    //            ball.x >  FIELD_W → return  1 (p1 scores)
+    // Human is p1 (red, left), AI is p2 (blue, right)
+    // p1 scores (goal=1) when ball.x > FIELD_W = right goal = AI's goal → human scores
+    goalScored('human');
+  } else if (goal === -1) {
+    // p2 scores (goal=-1) = ball.x < -FIELD_W = left goal = human's goal → AI scores
+    goalScored('ai');
+  } else if (step >= MAX_STEPS) {
+    flashMsg = '⏱  DRAW';
+    flashTimer = 80;
+    resetPositions();
+  }
+
+  // Draw
+  drawField();
+  drawPlayer(p1, '#dc3c3c', 'YOU');
+  drawPlayer(p2, '#3c3cdc', 'AI');
+  drawBall(ball);
+  drawHUD();
+}
+
+// =============================================================================
+// STARTUP — load weights then start
+// =============================================================================
+async function init() {
+  const overlay = document.getElementById('overlay');
+  const msg     = document.getElementById('overlay-msg');
+  const bar     = document.getElementById('loading-bar');
+
+  msg.textContent = 'Loading AI weights...';
+  bar.style.width = '20%';
+
+  try {
+    const res = await fetch('weights.json');
+    if (!res.ok) throw new Error(`weights.json not found (${res.status})`);
+    bar.style.width = '60%';
+
+    const w = await res.json();
+    W0 = w.w0; B0 = w.b0;
+    W1 = w.w1; B1 = w.b1;
+    W2 = w.w2; B2 = w.b2;
+
+    bar.style.width = '100%';
+    msg.textContent = '✅  Ready!';
+
+    setTimeout(() => {
+      overlay.style.display = 'none';
+      resetPositions();
+      running = true;
+      requestAnimationFrame(gameLoop);
+    }, 500);
+
+  } catch (err) {
+    msg.innerHTML = `
+      ❌ Could not load weights.json<br>
+      <small style="color:#888">${err.message}</small><br>
+      <small style="color:#666">Make sure weights.json is in the same folder as index.html</small>
+    `;
+    document.getElementById('loading-bar-wrap').style.display = 'none';
+  }
+}
+
+init();
+</script>
+</body>
+</html>
