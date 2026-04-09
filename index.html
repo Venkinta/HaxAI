@@ -83,7 +83,7 @@
 
 <div id="extra-wrap">
   EXTRAPOLATION: 
-  <input type="number" id="extra-input" value="170" step="10" min="0" max="500"> ms
+  <input type="number" id="extra-input" value="0" step="10" min="0" max="500"> ms
 </div>
 
 <div id="canvas-wrap">
@@ -462,13 +462,34 @@ function drawGoal(isLeft) {
 }
 
 function drawBall(doExtra = true) {
-  // 60 FPS = 16.66ms per frame. 
   const framesAhead = EXTRA_MS / (1000 / 60);
+  
+  // Start with the "true" current state
+  let dX = ball.x, dY = ball.y;
+  let dVX = ball.vx, dVY = ball.vy;
 
-  let drawX = ball.x + (doExtra ? ball.vx * framesAhead : 0);
-  let drawY = ball.y + (doExtra ? ball.vy * framesAhead : 0);
+  if (doExtra && framesAhead > 0) {
+    // Run a mini-sim for the extrapolation period
+    for (let i = 0; i < framesAhead; i++) {
+      dX += dVX; 
+      dY += dVY;
+      dVX *= CFG.B_DAMPING; 
+      dVY *= CFG.B_DAMPING;
 
-  const [bx, by] = px(drawX, drawY);
+      // Predict wall bounces so the ball doesn't "ghost" through lines
+      // Top/Bottom
+      if (dY + ball.radius > CFG.FIELD_H) { dY = CFG.FIELD_H - ball.radius; dVY *= -0.5; }
+      if (dY - ball.radius < -CFG.FIELD_H) { dY = -CFG.FIELD_H + ball.radius; dVY *= -0.5; }
+      
+      // Side walls (outside goal)
+      if (Math.abs(dY) > CFG.GOAL_H) {
+        if (dX + ball.radius > CFG.FIELD_W) { dX = CFG.FIELD_W - ball.radius; dVX *= -0.5; }
+        if (dX - ball.radius < -CFG.FIELD_W) { dX = -CFG.FIELD_W + ball.radius; dVX *= -0.5; }
+      }
+    }
+  }
+
+  const [bx, by] = px(dX, dY);
   const r = ball.radius * SCALE;
 
   ctx.fillStyle = '#fff';
@@ -478,23 +499,32 @@ function drawBall(doExtra = true) {
 function drawPlayer(player, col, label, doExtra = true) {
   const framesAhead = EXTRA_MS / (1000 / 60); 
 
-  let drawX = player.x + (doExtra ? player.vx * framesAhead : 0);
-  let drawY = player.y + (doExtra ? player.vy * framesAhead : 0);
+  let dX = player.x, dY = player.y;
+  let dVX = player.vx, dVY = player.vy;
 
-  const [px2, py2] = px(drawX, drawY);
+  if (doExtra && framesAhead > 0) {
+    for (let i = 0; i < framesAhead; i++) {
+      dX += dVX; dY += dVY;
+      dVX *= CFG.P_DAMPING; dVY *= CFG.P_DAMPING;
+      
+      // Simple map boundary prediction for players
+      if (dX + player.radius > CFG.MAP_W) dX = CFG.MAP_W - player.radius;
+      if (dX - player.radius < -CFG.MAP_W) dX = -CFG.MAP_W + player.radius;
+      if (dY + player.radius > CFG.MAP_H) dY = CFG.MAP_H - player.radius;
+      if (dY - player.radius < -CFG.MAP_H) dY = -CFG.MAP_H + player.radius;
+    }
+  }
+
+  const [px2, py2] = px(dX, dY);
   const r = player.radius * SCALE;
 
-  // Kick ring
   if (player.canKick) {
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(px2, py2, r + 4, 0, Math.PI*2); ctx.stroke();
   }
-  
   ctx.fillStyle = col;
   ctx.beginPath(); ctx.arc(px2, py2, r, 0, Math.PI*2); ctx.fill();
-  
-  // Label
   ctx.fillStyle = '#fff';
   ctx.font = `bold ${Math.round(9 * SCALE)}px Consolas`;
   ctx.textAlign = 'center';
