@@ -42,6 +42,27 @@
     text-align: center;
     line-height: 2.4;
   }
+  #extra-wrap {
+  margin-bottom: 15px;
+  font-size: 0.8rem;
+  color: #888;
+}
+
+#extra-input {
+  background: #1a1a2e;
+  border: 1px solid #e94560;
+  color: #e94560;
+  width: 60px;
+  padding: 4px;
+  font-family: monospace;
+  border-radius: 4px;
+  outline: none;
+  text-align: center;
+}
+
+#extra-input:focus {
+  box-shadow: 0 0 10px #e9456066;
+}
   #overlay button {
     margin-top: 14px; padding: 10px 32px;
     font-family: monospace; font-size: 1rem;
@@ -59,6 +80,11 @@
 
 <h1>HaxAI</h1>
 <div id="subtitle">YOU vs THE MACHINE</div>
+
+<div id="extra-wrap">
+  EXTRAPOLATION: 
+  <input type="number" id="extra-input" value="170" step="10" min="0" max="500"> ms
+</div>
 
 <div id="canvas-wrap">
   <canvas id="c"></canvas>
@@ -110,6 +136,16 @@ const AI_INFERENCE_EVERY = 4;
 // Game speed: 1.0 = normal. 0.5 = half speed (matches your local play.py feel).
 // Press +/- in game to adjust live without reloading.
 let GAME_SPEED = 0.5;
+
+
+// --- EXTRAPOLATION LOGIC ---
+const extraInput = document.getElementById('extra-input');
+let EXTRA_MS = 170; // Default fallback
+
+extraInput.addEventListener('input', () => {
+  // Use parseFloat and default to 0 so the game doesn't "freeze" if the box is empty
+  EXTRA_MS = parseFloat(extraInput.value) || 0;
+});
 
 // =============================================================================
 // CANVAS SETUP
@@ -377,7 +413,7 @@ document.addEventListener('keydown', e => {
     GAME_SPEED = Math.max(0.1, parseFloat((GAME_SPEED - 0.1).toFixed(1)));
     console.log('Speed:', GAME_SPEED);
   }
-  if (['KeyW','KeyA','KeyS','KeyD','Space'].includes(e.code)) e.preventDefault();
+  if (['KeyW','KeyA','KeyS','KeyD','Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','KeyX'].includes(e.code)) e.preventDefault();
 });
 document.addEventListener('keyup', e => { keys[e.code] = false; });
 
@@ -425,23 +461,40 @@ function drawGoal(isLeft) {
   ctx.fillRect(x, y, gw, gh);
 }
 
-function drawBall() {
-  const [bx, by] = px(ball.x, ball.y);
+function drawBall(doExtra = true) {
+  // 60 FPS = 16.66ms per frame. 
+  const framesAhead = EXTRA_MS / (1000 / 60);
+
+  let drawX = ball.x + (doExtra ? ball.vx * framesAhead : 0);
+  let drawY = ball.y + (doExtra ? ball.vy * framesAhead : 0);
+
+  const [bx, by] = px(drawX, drawY);
   const r = ball.radius * SCALE;
+
   ctx.fillStyle = '#fff';
   ctx.beginPath(); ctx.arc(bx, by, r, 0, Math.PI*2); ctx.fill();
 }
 
-function drawPlayer(player, col, label) {
-  const [px2, py2] = px(player.x, player.y);
+function drawPlayer(player, col, label, doExtra = true) {
+  const framesAhead = EXTRA_MS / (1000 / 60); 
+
+  let drawX = player.x + (doExtra ? player.vx * framesAhead : 0);
+  let drawY = player.y + (doExtra ? player.vy * framesAhead : 0);
+
+  const [px2, py2] = px(drawX, drawY);
   const r = player.radius * SCALE;
+
+  // Kick ring
   if (player.canKick) {
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(px2, py2, r + 4, 0, Math.PI*2); ctx.stroke();
   }
+  
   ctx.fillStyle = col;
   ctx.beginPath(); ctx.arc(px2, py2, r, 0, Math.PI*2); ctx.fill();
+  
+  // Label
   ctx.fillStyle = '#fff';
   ctx.font = `bold ${Math.round(9 * SCALE)}px Consolas`;
   ctx.textAlign = 'center';
@@ -528,9 +581,9 @@ function gameLoop(ts) {
 
   // Render once per animation frame regardless of physics ticks
   drawField();
-  drawPlayer(p1, '#dc3c3c', PLAYER_NAMES.human);
-  drawPlayer(p2, '#3c50dc', PLAYER_NAMES.ai);
-  drawBall();
+  drawPlayer(p1, '#dc3c3c', PLAYER_NAMES.human,true);
+  drawPlayer(p2, '#3c50dc', PLAYER_NAMES.ai,true);
+  drawBall(true);
   drawHUD();
 }
 
@@ -538,11 +591,11 @@ function tick() {
   // --- Human input (WASD + Space) ---
   // Mirror of: play.py  up = keys[pygame.K_w] etc.
   const humanActions = [
-    !!keys['KeyW'],      // up
-    !!keys['KeyS'],      // down
-    !!keys['KeyA'],      // left
-    !!keys['KeyD'],      // right
-    !!keys['Space'],     // kick
+    !!(keys['KeyW'] || keys['ArrowUp']),    // up
+    !!(keys['KeyS'] || keys['ArrowDown']),  // down
+    !!(keys['KeyA'] || keys['ArrowLeft']),  // left
+    !!(keys['KeyD'] || keys['ArrowRight']), // right
+    !!(keys['Space'] || keys['KeyX']),      // kick
   ];
 
   // --- AI inference every 4 frames ---
